@@ -100,7 +100,9 @@ int isAsciiDigit(int x) {
  *   Rating: 3
  */
 int conditional(int x, int y, int z) {
-	return ((!x+~1+1)&y)|((~!x+1)&z);
+	int x_1 = !x;
+	int x_11 = ~x_1;
+	return ((x_1+~1+1)&y)|((x_11+1)&z);
 }
 /*
 	!逻辑取反，～按位取反。
@@ -120,7 +122,7 @@ int conditional(int x, int y, int z) {
 int isLessOrEqual(int x, int y) {
 	int xs = ((x>>31)&1);
 	int ys = ((y>>31)&1);
-	return (xs&!ys)|(!(xs^ys)&(!(x^y)|(x+~y+1>>31)&1));
+	return (xs&!ys)|((!(xs^ys))&(!(x^y)|((x+~y+1)>>31)&1));
 }
 /*
 	1. 同号时，x - y <= 0 返回1， 否则返回0。
@@ -199,6 +201,47 @@ int howManyBits(int x) {
 
 }
 //float
+/*
+        float v = (-1)^s * M * 2^E
+        符号(sign) s
+        尾数(significand) M
+        阶码(exponent) E
+        ------------------------------------------
+        单精度(32位) s | exp | frac
+                     1 |  8  |  23
+
+        双精度(64位) s | exp | frac
+                     1 |  11 |  52
+        ==========================================
+        1. 规格化的值(Normalized Values)
+        exp既不全为0，也不全为1。
+        E = exp - Bias, Bias = 2^(k-1) - 1。(k为exp位数)
+        M = 1 + f。(0<=f<1)  M = 1.xxx....xx, f = 0.xxx.......xx
+
+        e.g. float F = 2021.0
+        v           =           (-1)^s *   M = 1 + f    * 2^E
+        2021 = 0111 1110 0101 =    1   * 1.11 1110 0101 * 2^10, f = 11 1110 0101
+        E = 10, Bias = 2^7-1 = 127，exp = E+Bias = 137 = 1000 1001
+        结果：  s |   exp   |      frac (补齐23位)
+                0  1000 1001  11 1110 0101 0000000000000
+
+        e.g. float F = 3.875
+        3.875 = 10.111 = 1.0111 * 2^1, f = 0111
+        E = 1, Bias = 2^7-1 = 127, exp = 128 = 1000 0000
+        结果:  0  1000 0000   0111 000 0000 0000 0000 0000
+	
+        2. 非规格化值(Denormalized Values) 提供一种表示0和接近于0的数字的方式(frac = 0)
+        exp全为0时。
+        E = 1 - Bias, Bias = 2^(k-1) -1, 32位时，E = 1 - 127 = -126
+        M = f。(0<=f<1)  M = 0.xxx.....xx, f = 0.xxx.......xx
+        frac全为0时表示0。
+
+        3. 特殊值
+        exp全为1时。
+        若frac全为0，表示∞, ∞能表示溢出的结果。
+        若frac不全为0，表示NaN(Not-a-Number)。	
+
+*/
 /* 
  * floatScale2 - Return bit-level equivalent of expression 2*f for
  *   floating point argument f.
@@ -211,13 +254,13 @@ int howManyBits(int x) {
  *   Rating: 4
  */
 unsigned floatScale2(unsigned uf) {
- int exp = (uf&0x7f800000)>>23;
-  int sign = uf&(1<<31);
-  if(exp==0) return uf<<1|sign;  
-  if(exp==255) return uf;
-  exp++;
-  if(exp==255) return 0x7f800000|sign;
-  return (exp<<23)|(uf&0x807fffff);
+ int exp = (uf&0x7f800000)>>23;        // 获取exp值，0x7f8000000 = 0111 1111 1000 ...0000，去除符号位与frac的值
+  int sign = uf&(1<<31);               // 获取符号位的值
+  if(exp==0) return uf<<1|sign;        // 非规格化值
+  if(exp==255) return uf;	       // ∞和NaN		
+  exp++;                               // exp++就是*2
+  if(exp==255) return 0x7f800000|sign; // 判断是否溢出 
+  return (exp<<23)|(uf&0x807fffff);    // 返回值
 }
 
 /* 
@@ -232,26 +275,30 @@ unsigned floatScale2(unsigned uf) {
  *   Max ops: 30
  *   Rating: 4
  */
+/* 
+	非规格化，非常接近0，转换为int后为0
+	规格化，不超过int范围时转换为int，超过int范围时返回0x80000000u
+	特殊值，返回0x80000000u
+*/
 int floatFloat2Int(unsigned uf) {
 	int s = uf>>31;
 	int exp = (uf>>23)&0xff;
 	int frac = uf&0x007fffff;
-	if(exp<0x7f){
+	int E = exp - 127;
+	if(exp<0x7f){							// exp < 127，小数		
 		return 0;
-	}else if(exp>157){
-		return 0x80000000;
-	}else{
-		int abs;
-		if(exp - 150>0){
-			abs = 0x00800000 + frac<<exp - 150;
-		}else{
-			abs = 0x00800000 + frac>>150 - exp;
-		}
-		if(s){
-			return -abs;
-		}else{
-			return abs;
-		}
+	}else if(exp>157){						// 有符号int范围2^31 = 2147483648 = 0x8000 0000 
+		return 0x80000000;					// = 1 00...00(2进制31个0) = 1.0 * 2^30
+	}else{								// E = 30，Bias=127, exp = 30+127 = 157
+		frac = frac | (1<<23);					
+		if (E  < 23)						// 单精度frac 为23位
+			frac >>= (23 - E);				// 获取整数部分frac
+		else							 
+			frac <<= (E - 23);
+		if (s)
+			return -frac;
+		else
+			return frac;								
 	}
 
 }
@@ -268,12 +315,17 @@ int floatFloat2Int(unsigned uf) {
  *   Max ops: 30 
  *   Rating: 4
  */
+/*
+	2.0 = 10.0 = 1.0 * 2^1   E = 1, M = 1 + 0, s = 0, exp = E+127 
+	2.0^x = M*2^1*2^(x-1)=M*2^x
+	exp = E + 127 = x + 127	
+*/	
 unsigned floatPower2(int x) {
-	 int INF = 0xff<<23;
-  int exp = x + 127;
-  if(exp <= 0) return 0;
-  if(exp >= 255) return INF;
-  return exp << 23;
+  int INF = 0xff<<23;				// 定义INF: 阶码全为1，frac全为0
+  int exp = x + 127;				// exp = E + Bias = E + 127
+  if(exp <= 0) return 0;			// 非规格值返回0
+  if(exp >= 255) return INF;			// ∞返回INF
+  return exp << 23;				// 
 
 }
 
